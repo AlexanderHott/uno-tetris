@@ -1,5 +1,6 @@
 #![no_std]
 #![no_main]
+#![feature(generic_const_exprs)]
 
 use arduino_hal::delay_ms;
 use panic_halt as _;
@@ -42,9 +43,9 @@ mod max7219 {
     use crate::println;
     use arduino_hal::port::{mode::Output, Pin};
 
-    pub const NUM_DEVICES: usize = 4;
-    const MATRIX_SIZE: usize = 8;
-
+    // pub const NUM_DEVICES: usize = 4;
+    // const MATRIX_SIZE: usize = 8;
+    //
     #[derive(Copy, Clone)]
     enum Config {
         /// TODO: No idea what this is
@@ -59,7 +60,7 @@ mod max7219 {
         DisplayTest(bool),
     }
 
-    pub struct Max7219 {
+    pub struct Max7219<const MATRIX_SIZE: usize, const DEVICE_COUNT: usize> {
         /// Data in pin
         din: Pin<Output>,
         /// Chip select pin
@@ -67,17 +68,16 @@ mod max7219 {
         /// Clock pin
         clk: Pin<Output>,
         /// Data to be transferred to the MAX7219 chip.
-        spi_data: [u8; NUM_DEVICES * 2],
+        spi_data: [u16; DEVICE_COUNT],
     }
 
-    impl Max7219 {
+    impl<const MATRIX_SIZE: usize, const DEVICE_COUNT: usize> Max7219<MATRIX_SIZE, DEVICE_COUNT> {
         pub fn new(din: Pin<Output>, cs: Pin<Output>, clk: Pin<Output>) -> Self {
-            assert!(NUM_DEVICES > 0);
             Max7219 {
                 din,
                 cs,
                 clk,
-                spi_data: [0; NUM_DEVICES * 2],
+                spi_data: [0; DEVICE_COUNT],
             }
         }
 
@@ -85,8 +85,9 @@ mod max7219 {
         pub fn set_row(&mut self, idx_dev_frst: usize, idx_dev_last: usize, row: u8, value: u8) {
             for dev_idx in idx_dev_frst..idx_dev_last + 1 {
                 // Matrix is 1 indexed
-                self.spi_data[2 * dev_idx + 0] = row + 1;
-                self.spi_data[2 * dev_idx + 1] = value;
+                let val = (((row + 1) as u16) << 8) + value as u16; // TODO:  get rid of u8, u8 ->
+                                                                    // u16 somehow
+                self.spi_data[dev_idx] = val;
             }
 
             self.bitbang_write()
@@ -135,9 +136,9 @@ mod max7219 {
                 Config::Shutdown(b) => (0xC, if b { 0 } else { 1 }),
                 Config::DisplayTest(b) => (0xF, b as u8),
             };
-            for i in 0..NUM_DEVICES {
-                self.spi_data[i * 2 + 0] = opcode;
-                self.spi_data[i * 2 + 1] = option;
+            for i in 0..DEVICE_COUNT {
+                let val = ((opcode as u16) << 8) + option as u16;
+                self.spi_data[i] = val;
             }
 
             self.bitbang_write();
@@ -153,9 +154,9 @@ mod max7219 {
         }
 
         /// MSB shifted out first
-        pub fn shift_out(&mut self, mut value: u8) {
-            for _ in 0..u8::BITS {
-                if (value & 128) != 0 {
+        pub fn shift_out(&mut self, mut value: u16) {
+            for _ in 0..u16::BITS {
+                if (value & 0b1000_0000_0000_0000) != 0 {
                     self.din.set_high();
                 } else {
                     self.din.set_low();
@@ -180,7 +181,7 @@ fn main() -> ! {
     let din = pins.d13.into_output().downgrade();
     let cs = pins.d12.into_output().downgrade();
     let clk = pins.d11.into_output().downgrade();
-    let mut matrix = max7219::Max7219::new(din, cs, clk);
+    let mut matrix: max7219::Max7219<8, 4> = max7219::Max7219::new(din, cs, clk);
     matrix.init();
 
     /*
@@ -194,7 +195,7 @@ fn main() -> ! {
      */
 
     loop {
-        for i in 0..max7219::NUM_DEVICES {
+        for i in 0..4 {
             for row in 0..8 {
                 matrix.set_row(i, i, row, u8::MAX);
                 delay_ms(100);
