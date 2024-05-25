@@ -93,6 +93,20 @@ mod max7219 {
             self.bitbang_write()
         }
 
+        /// Set the entire board
+        pub fn set_board(&mut self, led_states: &[u8; DEVICE_COUNT * MATRIX_SIZE]) {
+            for (i, led_state) in led_states.into_iter().enumerate() {
+                let device_idx = i % DEVICE_COUNT;
+                let row: u16 = (i as u16 / 4) + 1;
+
+                self.spi_data[device_idx] = (row << 8) + (*led_state) as u16;
+
+                if i % DEVICE_COUNT == DEVICE_COUNT - 1 {
+                    self.bitbang_write();
+                }
+            }
+        }
+
         /// Initialize the matrix to be controlled. Must be called before you are able to turn on
         /// LEDS.
         pub fn init(&mut self) {
@@ -181,26 +195,61 @@ fn main() -> ! {
     let din = pins.d13.into_output().downgrade();
     let cs = pins.d12.into_output().downgrade();
     let clk = pins.d11.into_output().downgrade();
+    // TODO: hard code 8 as a constant. It isn't really generic
     let mut matrix: max7219::Max7219<8, 4> = max7219::Max7219::new(din, cs, clk);
     matrix.init();
 
-    /*
-     * For examples (and inspiration), head to
-     *
-     *     https://github.com/Rahix/avr-hal/tree/main/examples
-     *
-     * NOTE: Not all examples were ported to all boards!  There is a good chance though, that code
-     * for a different board can be adapted for yours.  The Arduino Uno currently has the most
-     * examples available.
-     */
-
     loop {
-        for i in 0..4 {
-            for row in 0..8 {
-                matrix.set_row(i, i, row, u8::MAX);
-                delay_ms(100);
-                matrix.set_row(i, i, row, 0);
-            }
-        }
+        // matrix.set_board(&[
+        //     0b01010101, 0b01010101, 0b01010101, 0b01010101, 0b10101010, 0b10101010, 0b10101010,
+        //     0b10101010, 0b01010101, 0b01010101, 0b01010101, 0b01010101, 0b10101010, 0b10101010,
+        //     0b10101010, 0b10101010, 0b01010101, 0b01010101, 0b01010101, 0b01010101, 0b10101010,
+        //     0b10101010, 0b10101010, 0b10101010, 0b01010101, 0b01010101, 0b01010101, 0b01010101,
+        //     0b10101010, 0b10101010, 0b10101010, 0b10101010,
+        // ]);
+        // delay_ms(200);
+        // matrix.set_board(&[
+        //     0b10101010, 0b10101010, 0b10101010, 0b10101010, 0b01010101, 0b01010101, 0b01010101,
+        //     0b01010101, 0b10101010, 0b10101010, 0b10101010, 0b10101010, 0b01010101, 0b01010101,
+        //     0b01010101, 0b01010101, 0b10101010, 0b10101010, 0b10101010, 0b10101010, 0b01010101,
+        //     0b01010101, 0b01010101, 0b01010101, 0b10101010, 0b10101010, 0b10101010, 0b10101010,
+        //     0b01010101, 0b01010101, 0b01010101, 0b01010101,
+        // ]);
+        // delay_ms(200);
+
+        matrix.set_board(
+            &[
+            0b00100010, 0b00100010, 0b00100010, 0b00100010,
+            0b01010101, 0b01010101, 0b01010101, 0b01010101,
+            0b01011101, 0b01011101, 0b01011101, 0b01011101,
+            0b10000000, 0b10000000, 0b10000000, 0b10000000,
+            0b10100100, 0b10100100, 0b10100100, 0b10100100,
+            0b10000000, 0b10000000, 0b10000000, 0b10000000,
+            0b01000001, 0b01000001, 0b01000001, 0b01000001,
+            0b00111110, 0b00111110, 0b00111110, 0b00111110,
+            ]
+        );
+        delay_ms(200);
+        matrix.set_board(
+            &[
+            0b01000100, 0b01000100, 0b01000100, 0b01000100,
+            0b10101010, 0b10101010, 0b10101010, 0b10101010,
+            0b10111010, 0b10111010, 0b10111010, 0b10111010,
+            0b00000001, 0b00000001, 0b00000001, 0b00000001,
+            0b01001001, 0b01001001, 0b01001001, 0b01001001,
+            0b00000001, 0b00000001, 0b00000001, 0b00000001,
+            0b10000010, 0b10000010, 0b10000010, 0b10000010,
+            0b01111100, 0b01111100, 0b01111100, 0b01111100,
+            ]
+        );
+        delay_ms(200);
+        // matrix.set_board(&[
+        //     0b10101010, 0b10101010, 0b10101010, 0b10101010, 0b01010101, 0b01010101, 0b01010101,
+        //     0b01010101, 0b10101010, 0b10101010, 0b10101010, 0b10101010, 0b01010101, 0b01010101,
+        //     0b01010101, 0b01010101, 0b10101010, 0b10101010, 0b10101010, 0b10101010, 0b01010101,
+        //     0b01010101, 0b01010101, 0b01010101, 0b10101010, 0b10101010, 0b10101010, 0b10101010,
+        //     0b01010101, 0b01010101, 0b01010101, 0b01010101,
+        // ]);
+        // delay_ms(200);
     }
 }
