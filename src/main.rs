@@ -3,19 +3,48 @@
 
 use arduino_hal::{
     delay_ms,
-    hal::port::{PD0, PD1},
-    pac::USART0,
-    port::{
-        mode::{Input, Output},
-        Pin,
-    },
-    Usart,
+    port::{mode::Output, Pin},
 };
 use panic_halt as _;
+use ufmt::derive::uDebug;
+
+mod serial {
+    use arduino_hal::{hal::usart::Usart0, DefaultClock};
+    use core::cell::RefCell;
+
+    pub struct Console(pub RefCell<Option<Usart0<DefaultClock>>>);
+    /// SAFETY: There is only one "thread", so `Send`ing it isn't possible.
+    unsafe impl Send for Console {}
+    unsafe impl Sync for Console {}
+
+    pub static CONSOLE: Console = Console(RefCell::new(None));
+
+    pub fn init(usart: Usart0<DefaultClock>) {
+        *CONSOLE.0.borrow_mut() = Some(usart);
+    }
+
+    #[macro_export]
+    macro_rules! print {
+        ($($t:tt)*) => {
+            if let Some(serial) = serial::CONSOLE.0.borrow_mut().as_mut() {
+                let _ = ufmt::uwrite!(serial, $($t)*);
+            }
+        };
+    }
+
+    #[macro_export]
+    macro_rules! println {
+        ($($t:tt)*) => {
+            if let Some(serial) = serial::CONSOLE.0.borrow_mut().as_mut() {
+                let _ = ufmt::uwriteln!(serial, $($t)*);
+            }
+        };
+    }
+}
 
 const NUM_DEVICES: usize = 4;
 
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, uDebug)]
 enum Command {
     DecodeMode(bool),
     Intensity(u8), // TODO max 0xF i think
@@ -45,8 +74,10 @@ impl Command {
 fn main() -> ! {
     let dp = arduino_hal::Peripherals::take().unwrap();
     let pins = arduino_hal::pins!(dp);
-    let mut serial = arduino_hal::default_serial!(dp, pins, 57600);
-    ufmt::uwriteln!(&mut serial, "Hello from Arduino!\r").unwrap();
+    let ser = arduino_hal::default_serial!(dp, pins, 57600);
+
+    serial::init(ser);
+    println!("Serial init");
 
     let mut din = pins.d13.into_output().downgrade();
     let mut cs = pins.d12.into_output().downgrade();
@@ -55,41 +86,11 @@ fn main() -> ! {
 
     delay_ms(1);
 
-    control(
-        Command::DisplayTest(false),
-        &mut din,
-        &mut cs,
-        &mut clk,
-        &mut serial,
-    );
-    control(
-        Command::ScanLimit(7),
-        &mut din,
-        &mut cs,
-        &mut clk,
-        &mut serial,
-    );
-    control(
-        Command::Intensity(0),
-        &mut din,
-        &mut cs,
-        &mut clk,
-        &mut serial,
-    );
-    control(
-        Command::DecodeMode(false),
-        &mut din,
-        &mut cs,
-        &mut clk,
-        &mut serial,
-    );
-    control(
-        Command::Shutdown(false),
-        &mut din,
-        &mut cs,
-        &mut clk,
-        &mut serial,
-    );
+    control(Command::DisplayTest(false), &mut din, &mut cs, &mut clk);
+    control(Command::ScanLimit(7), &mut din, &mut cs, &mut clk);
+    control(Command::Intensity(0), &mut din, &mut cs, &mut clk);
+    control(Command::DecodeMode(false), &mut din, &mut cs, &mut clk);
+    control(Command::Shutdown(false), &mut din, &mut cs, &mut clk);
 
     /*
      * For examples (and inspiration), head to
@@ -110,30 +111,25 @@ fn main() -> ! {
     }
 }
 
-fn control(
-    command: Command,
-    data_pin: &mut Pin<Output>,
-    chip_select: &mut Pin<Output>,
-    clock_pin: &mut Pin<Output>,
-    serial: &mut Usart<USART0, Pin<Input, PD0>, Pin<Output, PD1>>,
-) {
+fn control(command: Command, din: &mut Pin<Output>, cs: &mut Pin<Output>, clk: &mut Pin<Output>) {
     let mut spi_data = [0u8; 2 * NUM_DEVICES];
 
+    print!("{:?}: ", command);
     for dev_idx in 0..NUM_DEVICES {
         let (opcode, param) = command.as_u8s();
         spi_data[2 * dev_idx] = opcode;
         spi_data[2 * dev_idx + 1] = param;
-        ufmt::uwrite!(serial, "{} {} ", opcode, param).unwrap();
+        print!("{:?} {:?} ", opcode, param);
     }
-    ufmt::uwriteln!(serial, "").unwrap();
+    println!("");
 
-    chip_select.set_low();
+    cs.set_low();
 
     for data in spi_data {
-        shift_out(data_pin, clock_pin, data);
+        shift_out(din, clk, data);
     }
 
-    chip_select.set_high();
+    cs.set_high();
 }
 
 fn shift_out(data_pin: &mut Pin<Output>, clock_pin: &mut Pin<Output>, mut value: u8) {
