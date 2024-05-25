@@ -4,6 +4,7 @@
 
 use arduino_hal::delay_ms;
 use panic_halt as _;
+use tetris::Tetris;
 
 mod serial {
     use arduino_hal::{hal::usart::Usart0, DefaultClock};
@@ -83,6 +84,7 @@ mod max7219 {
 
         /// device indexes are inclusive
         pub fn set_row(&mut self, idx_dev_frst: usize, idx_dev_last: usize, row: u8, value: u8) {
+            self.spi_data = [0; DEVICE_COUNT];
             for dev_idx in idx_dev_frst..idx_dev_last + 1 {
                 // Matrix is 1 indexed
                 let val = (((row + 1) as u16) << 8) + value as u16; // TODO:  get rid of u8, u8 ->
@@ -91,6 +93,12 @@ mod max7219 {
             }
 
             self.bitbang_write()
+        }
+
+        pub fn clear(&mut self) {
+            for row in 0..8 {
+                self.set_row(0, DEVICE_COUNT - 1, row, 0);
+            }
         }
 
         /// Set the entire board
@@ -184,6 +192,98 @@ mod max7219 {
     }
 }
 
+mod tetris {
+    use crate::println;
+
+    #[derive(Copy, Clone)]
+    pub struct T {
+        x: usize,
+        y: usize,
+    }
+
+    pub struct Tetris {
+        board: Board,
+    }
+
+    impl Tetris {
+        pub fn new() -> Self {
+            println!("new tetris");
+            Tetris {
+                board: Board::new(),
+            }
+        }
+
+        pub fn render_board(&mut self) -> [u8; 32] {
+            self.board.render()
+        }
+
+        pub fn tick(&mut self) {
+            self.board.move_shapes_down();
+        }
+    }
+
+    struct Board {
+        shapes: [Option<T>; 100],
+        matrix: [u8; 32],
+    }
+
+    impl Board {
+        pub fn new() -> Self {
+            let mut shapes = [None; 100];
+            shapes[0] = Some(T { x: 5, y: 5 });
+            Board {
+                shapes,
+                matrix: [0u8; 32],
+            }
+        }
+
+        pub fn render(&mut self) -> [u8; 32] {
+            for shape_opt in self.shapes {
+                if let Some(shape) = shape_opt {
+                    self.set_bit(shape.x, shape.y);
+                }
+            }
+
+            let ret = self.matrix;
+            self.matrix = [0u8; 32];
+            ret
+        }
+
+        fn set_bit(&mut self, x: usize, y: usize) {
+            assert!(x < 8);
+            assert!(y < 32); // TODO make 32 = 8 * dev count
+
+            self.matrix[y] |= 0b1000_0000 >> x;
+        }
+
+        fn bit_at(&self, x: usize, y: usize) -> bool {
+            self.matrix[y] & (0b1000_0000 >> x) != 0
+        }
+
+        pub fn move_shapes_down(&mut self) {
+            for i in 0..self.shapes.len() {
+                let shape_opt = self.shapes[i];
+                if let Some(mut shape) = shape_opt {
+                    if self.can_move_down(&shape) {
+                        shape.y += 1;
+                        self.shapes[i] = Some(shape);
+                    }
+                }
+            }
+
+            for shape in self.shapes {
+                if shape.is_some() {
+                    println!("{}", shape.unwrap().y);
+                }
+            }
+        }
+
+        fn can_move_down(&self, shape: &T) -> bool {
+            !self.bit_at(shape.x, shape.y + 1) && shape.y < 31
+        }
+    }
+}
+
 #[arduino_hal::entry]
 fn main() -> ! {
     let dp = arduino_hal::Peripherals::take().unwrap();
@@ -198,70 +298,44 @@ fn main() -> ! {
     // TODO: hard code 8 as a constant. It isn't really generic
     let mut matrix: max7219::Max7219<8, 4> = max7219::Max7219::new(din, cs, clk);
     matrix.init();
+    let mut tetris = Tetris::new();
 
     loop {
-        let cats = [
-            0b00100010,
-            0b01010101,
-            0b01011101,
-            0b10000000,
-            0b10100100,
-            0b10000000,
-            0b01000001,
-            0b00111110,
-
-            0b00100010,
-            0b01010101,
-            0b01011101,
-            0b10000000,
-            0b10100100,
-            0b10000000,
-            0b01000001,
-            0b00111110,
-
-            0b00100010,
-            0b01010101,
-            0b01011101,
-            0b10000000,
-            0b10100100,
-            0b10000000,
-            0b01000001,
-            0b00111110,
-
-            0b00100010,
-            0b01010101,
-            0b01011101,
-            0b10000000,
-            0b10100100,
-            0b10000000,
-            0b01000001,
-            0b00111110,
-        ];
-        let cats_rotated = rotate_bits_left(cats);
-        matrix.set_board(&cats_rotated);
-
-        delay_ms(1000);
-        matrix.set_board(&[
-            0b00100010, 0b00100010, 0b00100010, 0b00100010,
-            0b01010101, 0b01010101, 0b01010101, 0b01010101,
-            0b01011101, 0b01011101, 0b01011101, 0b01011101,
-            0b10000000, 0b10000000, 0b10000000, 0b10000000, 
-            0b10100100, 0b10100100, 0b10100100, 0b10100100,
-            0b10000000, 0b10000000, 0b10000000, 0b10000000,
-            0b01000001, 0b01000001, 0b01000001, 0b01000001, 
-            0b00111110, 0b00111110, 0b00111110, 0b00111110,
-        ]);
+        let screen = tetris.render_board();
+        let screen = rotate_bits_left(screen);
+        matrix.clear();
+        matrix.set_board(&screen);
+        tetris.tick();
         delay_ms(1000);
 
+        // let cats = [
+        //     0b00100010, 0b01010101, 0b01011101, 0b10000000, 0b10100100, 0b10000000, 0b01000001,
+        //     0b00111110, 0b00100010, 0b01010101, 0b01011101, 0b10000000, 0b10100100, 0b10000000,
+        //     0b01000001, 0b00111110, 0b00100010, 0b01010101, 0b01011101, 0b10000000, 0b10100100,
+        //     0b10000000, 0b01000001, 0b00111110, 0b00100010, 0b01010101, 0b01011101, 0b10000000,
+        //     0b10100100, 0b10000000, 0b01000001, 0b00111110,
+        // ];
+        // let cats_rotated = rotate_bits_left(cats);
+        // matrix.set_board(&cats_rotated);
+        //
+        // delay_ms(1000);
+        // matrix.set_board(&[
+        //     0b00100010, 0b00100010, 0b00100010, 0b00100010, 0b01010101, 0b01010101, 0b01010101,
+        //     0b01010101, 0b01011101, 0b01011101, 0b01011101, 0b01011101, 0b10000000, 0b10000000,
+        //     0b10000000, 0b10000000, 0b10100100, 0b10100100, 0b10100100, 0b10100100, 0b10000000,
+        //     0b10000000, 0b10000000, 0b10000000, 0b01000001, 0b01000001, 0b01000001, 0b01000001,
+        //     0b00111110, 0b00111110, 0b00111110, 0b00111110,
+        // ]);
+        // delay_ms(1000);
 
         // matrix.set_board(&[
         //   0b00100010, 0b00100010, 0b00100010, 0b00100010,
         //   0b01010101, 0b01010101, 0b01010101, 0b01010101,
         //   0b01011101, 0b01011101, 0b01011101, 0b01011101,
-        //   0b10000000, 0b10000000, 0b10000000, 0b10000000, 
+        //   0b10000000, 0b10000000, 0b10000000, 0b10000000,
         //   0b10100100, 0b10100100, 0b10100100, 0b10100100,
         //   0b10000000, 0b10000000, 0b10000000, 0b10000000,
-        //   0b01000001, 0b01000001, 0b01000001, 0b01000001, 
+        //   0b01000001, 0b01000001, 0b01000001, 0b01000001,
         //   0b00111110, 0b00111110, 0b00111110, 0b00111110,
         // ]);
         // delay_ms(1000);
