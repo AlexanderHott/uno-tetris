@@ -2,19 +2,18 @@
 #![no_main]
 
 use arduino_hal::{
-    delay_ms, delay_us, hal::port::{PD0, PD1}, pac::USART0, port::{
+    delay_ms,
+    hal::port::{PD0, PD1},
+    pac::USART0,
+    port::{
         mode::{Input, Output},
         Pin,
-    }, Usart
+    },
+    Usart,
 };
 use panic_halt as _;
 
 const NUM_DEVICES: usize = 4;
-/// #define SPI_OFFSET(i, x) (((LAST_BUFFER - (i)) * 2) + (x))
-const LAST_BUFFER: usize = NUM_DEVICES - 1;
-const fn SPI_OFFSET(i: usize, x: usize) -> usize {
-    (LAST_BUFFER - i) * 2 + x
-}
 
 #[derive(Copy, Clone)]
 enum Command {
@@ -36,7 +35,7 @@ impl Command {
             Command::DecodeMode(b) => (0x9, if *b { 0xff } else { 0 }),
             Command::Intensity(n) => (0xA, *n),
             Command::ScanLimit(n) => (0xB, *n),
-            Command::Shutdown(b) => (0xC, if *b {0} else {1}),
+            Command::Shutdown(b) => (0xC, if *b { 0 } else { 1 }),
             Command::DisplayTest(b) => (0xF, (*b) as u8),
         }
     }
@@ -58,20 +57,39 @@ fn main() -> ! {
 
     control(
         Command::DisplayTest(false),
-        &mut din, &mut cs, &mut clk, &mut serial);
+        &mut din,
+        &mut cs,
+        &mut clk,
+        &mut serial,
+    );
     control(
         Command::ScanLimit(7),
-        &mut din, &mut cs, &mut clk, &mut serial,);
+        &mut din,
+        &mut cs,
+        &mut clk,
+        &mut serial,
+    );
     control(
         Command::Intensity(0),
-        &mut din, &mut cs, &mut clk, &mut serial,);
+        &mut din,
+        &mut cs,
+        &mut clk,
+        &mut serial,
+    );
     control(
         Command::DecodeMode(false),
-        &mut din, &mut cs, &mut clk, &mut serial,);
+        &mut din,
+        &mut cs,
+        &mut clk,
+        &mut serial,
+    );
     control(
         Command::Shutdown(false),
-        &mut din, &mut cs, &mut clk, &mut serial,);
-
+        &mut din,
+        &mut cs,
+        &mut clk,
+        &mut serial,
+    );
 
     /*
      * For examples (and inspiration), head to
@@ -83,13 +101,11 @@ fn main() -> ! {
      * examples available.
      */
 
-    set_row(0, 0, 0xFF, &mut din, &mut cs, &mut clk);
-
     loop {
         for row in 0..8 {
-            set_row(0, row, u8::MAX, &mut din, &mut cs, &mut clk);
+            set_row(0, 1, row, u8::MAX, &mut din, &mut cs, &mut clk);
             delay_ms(500);
-            set_row(0, row, 0u8, &mut din, &mut cs, &mut clk);
+            set_row(0, 1, row, 0u8, &mut din, &mut cs, &mut clk);
         }
     }
 }
@@ -103,10 +119,10 @@ fn control(
 ) {
     let mut spi_data = [0u8; 2 * NUM_DEVICES];
 
-    for device_idx in 0..NUM_DEVICES {
+    for dev_idx in 0..NUM_DEVICES {
         let (opcode, param) = command.as_u8s();
-        spi_data[SPI_OFFSET(device_idx, 0)] = opcode;
-        spi_data[SPI_OFFSET(device_idx, 1)] = param;
+        spi_data[2 * dev_idx] = opcode;
+        spi_data[2 * dev_idx + 1] = param;
         ufmt::uwrite!(serial, "{} {} ", opcode, param).unwrap();
     }
     ufmt::uwriteln!(serial, "").unwrap();
@@ -114,46 +130,17 @@ fn control(
     chip_select.set_low();
 
     for data in spi_data {
-        shift_out(data_pin, clock_pin, data, Some(serial));
+        shift_out(data_pin, clock_pin, data);
     }
 
     chip_select.set_high();
 }
 
-// void shiftOut(uint8_t dataPin, uint8_t clockPin, uint8_t bitOrder, uint8_t val)
-// {
-// 	uint8_t i;
-//
-// 	for (i = 0; i < 8; i++)  {
-// 		if (bitOrder == LSBFIRST) {
-// 			digitalWrite(dataPin, val & 1);
-// 			val >>= 1;
-// 		} else {
-// 			digitalWrite(dataPin, (val & 128) != 0);
-// 			val <<= 1;
-// 		}
-//
-// 		digitalWrite(clockPin, HIGH);
-// 		digitalWrite(clockPin, LOW);
-// 	}
-// }
-fn shift_out(
-    data_pin: &mut Pin<Output>,
-    clock_pin: &mut Pin<Output>,
-    mut value: u8,
-    mut serialopt: Option<&mut Usart<USART0, Pin<Input, PD0>, Pin<Output, PD1>>>,
-) {
-    
+fn shift_out(data_pin: &mut Pin<Output>, clock_pin: &mut Pin<Output>, mut value: u8) {
     for _ in 0..u8::BITS {
         if (value & 128) != 0 {
-            // if let Some(ref mut serial) = serialopt {
-            //     ufmt::uwrite!(serial, "{}", 1).unwrap();
-            // }
             data_pin.set_high();
         } else {
-            // if let Some(ref mut serial) = serialopt {
-            // ufmt::uwrite!(serial, ".", ).unwrap();
-            // }
             data_pin.set_low();
         }
         value <<= 1;
@@ -161,33 +148,12 @@ fn shift_out(
         clock_pin.set_high();
         clock_pin.set_low();
     }
-
-    // if let Some(serial) = serialopt {
-    //     ufmt::uwriteln!(serial, "",).unwrap();
-    // }
 }
 
-// void setRow(uint8_t device, uint8_t row, uint8_t value) {
-//   uint8_t* spiData = (uint8_t*)malloc(SPI_DATA_SIZE);
-//
-//   for (int i = 0; i < MAX_DEVICES; ++i) {
-//     if (i == device) {
-//       spiData[SPI_OFFSET(i, 0)] = OP_DIGIT0 + row;
-//       spiData[SPI_OFFSET(i, 1)] = value;
-//     }
-//   }
-//
-//
-//   digitalWrite(CS_PIN, LOW);
-//   for (uint16_t i = 0; i < SPI_DATA_SIZE; i++) {
-//     shiftOut(DATA_PIN, CLK_PIN, MSBFIRST, spiData[i]);
-//   }
-//   digitalWrite(CS_PIN, HIGH);
-//
-//   free(spiData);
-// }
+/// device indexes are inclusive
 fn set_row(
-    device_idx: u8,
+    idx_dev_frst: usize,
+    idx_dev_last: usize,
     row: u8,
     value: u8,
     data_pin: &mut Pin<Output>,
@@ -196,25 +162,15 @@ fn set_row(
 ) {
     let mut spi_data = [0u8; 2 * NUM_DEVICES as usize];
 
-
-    for device_idx in 0..NUM_DEVICES {
-        spi_data[SPI_OFFSET(device_idx, 0)] = row + 1;
-        spi_data[SPI_OFFSET(device_idx, 1)] = value;
-    }
-
-    for i in (0..2 * NUM_DEVICES as usize).step_by(2) {
-        if i / 2 == device_idx.into() {
-            let high = (row + 1) as u8;
-            let low = value;
-            spi_data[i] = high;
-            spi_data[i + 1] = low;
-        }
+    for dev_idx in idx_dev_frst..idx_dev_last + 1 {
+        spi_data[2 * dev_idx] = row + 1;
+        spi_data[2 * dev_idx + 1] = value;
     }
 
     chip_select.set_low();
 
     for data in spi_data {
-        shift_out(data_pin, clock_pin, data, None);
+        shift_out(data_pin, clock_pin, data);
     }
 
     chip_select.set_high();
