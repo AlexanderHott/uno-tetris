@@ -41,7 +41,6 @@ mod serial {
 }
 
 mod max7219 {
-    use crate::println;
     use arduino_hal::port::{mode::Output, Pin};
 
     // pub const NUM_DEVICES: usize = 4;
@@ -193,6 +192,8 @@ mod max7219 {
 }
 
 mod tetris {
+    use arduino_hal::delay_ms;
+
     use crate::println;
 
     const BLOCKS_PER_SHAPE: usize = 4;
@@ -289,12 +290,14 @@ mod tetris {
         }
 
         pub fn render_board(&mut self) -> [u8; 32] {
+            self.board.clear_current_piece();
             let moved = self.board.try_move_current_shape_down();
             self.board.render();
 
             if !moved {
                 self.board.clear_full_rows();
-                // self.board.replace_current_shape();
+                // TODO: check if we can replace the shape, otherwise end the game
+                self.board.replace_current_shape();
             }
 
             self.board.matrix
@@ -302,48 +305,51 @@ mod tetris {
     }
 
     struct Board {
-        shapes: [Option<Shape>; 100],
         current_shape: Shape,
         pub matrix: [u8; 32],
     }
 
     impl Board {
         pub fn new() -> Self {
-            let mut shapes = [None; 100];
-            for i in 0..7 {
-                shapes[i] = Some(Shape::I { x: i, y: 28 })
-            }
             Board {
-                shapes,
-                current_shape: Shape::I { x: 7, y: 26 },
-                matrix: [0u8; 32],
+                current_shape: Shape::I { x: 7, y: 0 },
+                // matrix: [0u8; 32],
+                matrix: [ 
+                    0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 
+                    0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 
+                    0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 
+                    0u8, 0u8, 0u8, 0b11110000,
+                    0b11111110,
+                    0b11111110,
+                    0b11111110,
+                    0b11111110,
+                ]
             }
         }
 
-        pub fn render(&mut self) -> [u8; 32] {
-            self.matrix = [0u8; 32];
-            // already placed shapes
-            for shape_opt in self.shapes {
-                if let Some(shape) = shape_opt {
-                    for (x, y) in shape.get_absolute_points() {
-                        self.set_bit(x, y)
-                    }
-                }
-            }
-            // current shape
+        pub fn clear_current_piece(&mut self) {
             for (x, y) in self.current_shape.get_absolute_points() {
-                self.set_bit(x, y)
+                self.set_bit(x, y, false);
+            }
+        }
+        pub fn render(&mut self) -> [u8; 32] {
+            for (x, y) in self.current_shape.get_absolute_points() {
+                self.set_bit(x, y, true);
             }
             // TODO: blinking shadow of current shape
 
             self.matrix
         }
 
-        fn set_bit(&mut self, x: usize, y: usize) {
+        fn set_bit(&mut self, x: usize, y: usize, on: bool) {
             assert!(x < 8);
             assert!(y < 32); // TODO make 32 = 8 * dev count
 
-            self.matrix[y] |= 0b1000_0000 >> x;
+            if on {
+                self.matrix[y] |= 0b1000_0000 >> x;
+            } else {
+                self.matrix[y] &= !(0b1000_0000 >> x);
+            }
         }
 
         fn bit_at(&self, x: usize, y: usize) -> bool {
@@ -363,6 +369,7 @@ mod tetris {
         // TODO: get bounding box
         fn can_move_down(&self, shape: &Shape) -> bool {
             for (x, y) in shape.get_absolute_points() {
+                println!("y >= 31: {}", y >= 31);
                 if y >= 31 || self.bit_at(x, y + 1) {
                     return false;
                 }
@@ -395,6 +402,10 @@ mod tetris {
                 }
             }
         }
+
+        fn replace_current_shape(&mut self) {
+            self.current_shape = Shape::T { x: 0, y: 0 }
+        }
     }
 }
 
@@ -419,7 +430,7 @@ fn main() -> ! {
         let screen = rotate_bits_left(screen);
         matrix.clear();
         matrix.set_board(&screen);
-        delay_ms(1000);
+        delay_ms(100);
 
         // let cats = [
         //     0b00100010, 0b01010101, 0b01011101, 0b10000000, 0b10100100, 0b10000000, 0b01000001,
