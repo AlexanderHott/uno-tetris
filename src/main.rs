@@ -195,10 +195,85 @@ mod max7219 {
 mod tetris {
     use crate::println;
 
+    const BLOCKS_PER_SHAPE: usize = 4;
+
+    /// Tetris shapes.
+    /// https://en.wikipedia.org/wiki/Tetromino
     #[derive(Copy, Clone)]
-    pub struct T {
-        x: usize,
-        y: usize,
+    enum Shape {
+        /// XXXXXX
+        ///   XX
+        T { x: usize, y: usize }, // TODO: add rotation
+        /// XX
+        /// XX
+        /// XXXX
+        L { x: usize, y: usize },
+        /// XX
+        /// XX
+        /// XX
+        /// XX
+        I { x: usize, y: usize },
+    }
+
+    impl Shape {
+        /// Shapes are always positioned at the top-left corner, so all relative offsets are
+        /// positive. Returns an array of (x,y) absolute (not relative) points in the 8x32
+        /// coordinate system.
+        fn get_absolute_points(&self) -> [(usize, usize); BLOCKS_PER_SHAPE] {
+            // TODO: maybe change to abs cus it can be done here;
+            match self {
+                Shape::T { x, y } => [
+                    (x + 0, y + 0),
+                    (x + 1, y + 0),
+                    (x + 2, y + 0),
+                    (x + 1, y + 1),
+                ],
+                Shape::L { x, y } => [
+                    (x + 0, y + 0),
+                    (x + 0, y + 1),
+                    (x + 0, y + 2),
+                    (x + 1, y + 2),
+                ],
+                Shape::I { x, y } => [
+                    (x + 0, y + 0),
+                    (x + 0, y + 1),
+                    (x + 0, y + 2),
+                    (x + 0, y + 3),
+                ],
+            }
+        }
+
+        fn x(&self) -> usize {
+            *match self {
+                Shape::T { x, .. } => x,
+                Shape::L { x, .. } => x,
+                Shape::I { x, .. } => x,
+            }
+        }
+
+        fn set_x(&mut self, new_x: usize) {
+            match self {
+                Shape::T { ref mut x, .. } => *x = new_x,
+                Shape::L { ref mut x, .. } => *x = new_x,
+                Shape::I { ref mut x, .. } => *x = new_x,
+            };
+        }
+
+        fn y(&self) -> usize {
+            *match self {
+                Shape::T { y, .. } => y,
+                Shape::L { y, .. } => y,
+                Shape::I { y, .. } => y,
+            }
+        }
+
+        fn set_y(&mut self, new_y: usize) {
+            match self {
+                Shape::T { ref mut y, .. } => *y = new_y,
+                Shape::L { ref mut y, .. } => *y = new_y,
+                Shape::I { ref mut y, .. } => *y = new_y,
+            };
+        }
     }
 
     pub struct Tetris {
@@ -214,39 +289,54 @@ mod tetris {
         }
 
         pub fn render_board(&mut self) -> [u8; 32] {
-            self.board.render()
-        }
+            let moved = self.board.try_move_current_shape_down();
+            self.board.render();
 
-        pub fn tick(&mut self) {
-            self.board.move_shapes_down();
+            if !moved {
+                self.board.clear_full_rows();
+                // self.board.replace_current_shape();
+            }
+
+            self.board.matrix
         }
     }
 
     struct Board {
-        shapes: [Option<T>; 100],
-        matrix: [u8; 32],
+        shapes: [Option<Shape>; 100],
+        current_shape: Shape,
+        pub matrix: [u8; 32],
     }
 
     impl Board {
         pub fn new() -> Self {
             let mut shapes = [None; 100];
-            shapes[0] = Some(T { x: 5, y: 5 });
+            for i in 0..7 {
+                shapes[i] = Some(Shape::I { x: i, y: 28 })
+            }
             Board {
                 shapes,
+                current_shape: Shape::I { x: 7, y: 26 },
                 matrix: [0u8; 32],
             }
         }
 
         pub fn render(&mut self) -> [u8; 32] {
+            self.matrix = [0u8; 32];
+            // already placed shapes
             for shape_opt in self.shapes {
                 if let Some(shape) = shape_opt {
-                    self.set_bit(shape.x, shape.y);
+                    for (x, y) in shape.get_absolute_points() {
+                        self.set_bit(x, y)
+                    }
                 }
             }
+            // current shape
+            for (x, y) in self.current_shape.get_absolute_points() {
+                self.set_bit(x, y)
+            }
+            // TODO: blinking shadow of current shape
 
-            let ret = self.matrix;
-            self.matrix = [0u8; 32];
-            ret
+            self.matrix
         }
 
         fn set_bit(&mut self, x: usize, y: usize) {
@@ -260,26 +350,50 @@ mod tetris {
             self.matrix[y] & (0b1000_0000 >> x) != 0
         }
 
-        pub fn move_shapes_down(&mut self) {
-            for i in 0..self.shapes.len() {
-                let shape_opt = self.shapes[i];
-                if let Some(mut shape) = shape_opt {
-                    if self.can_move_down(&shape) {
-                        shape.y += 1;
-                        self.shapes[i] = Some(shape);
-                    }
-                }
+        /// Tries to move the current active shape down. Returns
+        /// `true` if it moved.
+        pub fn try_move_current_shape_down(&mut self) -> bool {
+            if self.can_move_down(&self.current_shape) {
+                self.current_shape.set_y(self.current_shape.y() + 1);
+                return true;
             }
-
-            for shape in self.shapes {
-                if shape.is_some() {
-                    println!("{}", shape.unwrap().y);
-                }
-            }
+            return false;
         }
 
-        fn can_move_down(&self, shape: &T) -> bool {
-            !self.bit_at(shape.x, shape.y + 1) && shape.y < 31
+        // TODO: get bounding box
+        fn can_move_down(&self, shape: &Shape) -> bool {
+            for (x, y) in shape.get_absolute_points() {
+                if y >= 31 || self.bit_at(x, y + 1) {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        /// Clears any full rows and returns how many rows were cleared.
+        /// ## ##    ## <- c
+        ///             <- b
+        fn clear_full_rows(&mut self) -> usize {
+            // TODO: maybe can start looking forward from the base of the last placed shape to save
+            // loop iterations.
+
+            println!("clearing rows");
+            let mut base_idx = 31;
+            let mut curr_idx = 31;
+            loop {
+                println!("  clearing row {}: {}", curr_idx, self.matrix[curr_idx]);
+                if self.matrix[curr_idx] == u8::MAX {
+                    self.matrix[curr_idx] = 0;
+                } else {
+                    self.matrix[base_idx] = self.matrix[curr_idx];
+                    base_idx -= 1;
+                }
+                curr_idx -= 1;
+
+                if curr_idx == 0 {
+                    break base_idx; // cleared = base - curr, but curr = 0
+                }
+            }
         }
     }
 }
@@ -305,7 +419,6 @@ fn main() -> ! {
         let screen = rotate_bits_left(screen);
         matrix.clear();
         matrix.set_board(&screen);
-        tetris.tick();
         delay_ms(1000);
 
         // let cats = [
