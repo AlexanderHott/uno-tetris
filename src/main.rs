@@ -83,6 +83,7 @@ mod max7219 {
 
         /// device indexes are inclusive
         pub fn set_row(&mut self, idx_dev_frst: usize, idx_dev_last: usize, row: u8, value: u8) {
+            // TODO: self.spi_data ^= self.spi_data;
             self.spi_data = [0; DEVICE_COUNT];
             for dev_idx in idx_dev_frst..idx_dev_last + 1 {
                 // Matrix is 1 indexed
@@ -278,82 +279,17 @@ mod tetris {
     }
 
     pub struct Tetris {
-        board: Board,
+        current_shape: Shape,
+        board: BitBoard,
     }
 
     impl Tetris {
         pub fn new() -> Self {
             println!("new tetris");
             Tetris {
-                board: Board::new(),
-            }
-        }
-
-        pub fn render_board(&mut self) -> [u8; 32] {
-            self.board.clear_current_piece();
-            let moved = self.board.try_move_current_shape_down();
-            self.board.render();
-
-            if !moved {
-                self.board.clear_full_rows();
-                // TODO: check if we can replace the shape, otherwise end the game
-                self.board.replace_current_shape();
-            }
-
-            self.board.matrix
-        }
-    }
-
-    struct Board {
-        current_shape: Shape,
-        pub matrix: [u8; 32],
-    }
-
-    impl Board {
-        pub fn new() -> Self {
-            Board {
                 current_shape: Shape::I { x: 7, y: 0 },
-                // matrix: [0u8; 32],
-                matrix: [ 
-                    0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 
-                    0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 
-                    0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 
-                    0u8, 0u8, 0u8, 0b11110000,
-                    0b11111110,
-                    0b11111110,
-                    0b11111110,
-                    0b11111110,
-                ]
+                board: BitBoard::new(),
             }
-        }
-
-        pub fn clear_current_piece(&mut self) {
-            for (x, y) in self.current_shape.get_absolute_points() {
-                self.set_bit(x, y, false);
-            }
-        }
-        pub fn render(&mut self) -> [u8; 32] {
-            for (x, y) in self.current_shape.get_absolute_points() {
-                self.set_bit(x, y, true);
-            }
-            // TODO: blinking shadow of current shape
-
-            self.matrix
-        }
-
-        fn set_bit(&mut self, x: usize, y: usize, on: bool) {
-            assert!(x < 8);
-            assert!(y < 32); // TODO make 32 = 8 * dev count
-
-            if on {
-                self.matrix[y] |= 0b1000_0000 >> x;
-            } else {
-                self.matrix[y] &= !(0b1000_0000 >> x);
-            }
-        }
-
-        fn bit_at(&self, x: usize, y: usize) -> bool {
-            self.matrix[y] & (0b1000_0000 >> x) != 0
         }
 
         /// Tries to move the current active shape down. Returns
@@ -366,15 +302,74 @@ mod tetris {
             return false;
         }
 
+        // TODO: make random without replacement (deck of cards)
+        fn replace_current_shape(&mut self) {
+            self.current_shape = Shape::T { x: 0, y: 0 }
+        }
+
         // TODO: get bounding box
         fn can_move_down(&self, shape: &Shape) -> bool {
             for (x, y) in shape.get_absolute_points() {
-                println!("y >= 31: {}", y >= 31);
-                if y >= 31 || self.bit_at(x, y + 1) {
+                if y >= 31 || self.board.bit_at(x, y + 1) {
                     return false;
                 }
             }
             return true;
+        }
+
+        pub fn render_board(&mut self) -> [u8; 32] {
+            // clear current piece from board
+            for (x, y) in self.current_shape.get_absolute_points() {
+                self.board.set_bit(x, y, false);
+            }
+
+            let moved = self.try_move_current_shape_down();
+
+            // add current piece back
+            for (x, y) in self.current_shape.get_absolute_points() {
+                self.board.set_bit(x, y, true);
+            }
+
+            if !moved {
+                self.board.clear_full_rows();
+                // TODO: check if we can replace the shape, otherwise end the game
+                self.replace_current_shape();
+            }
+
+            self.board.bitboard
+        }
+    }
+
+    /// Bitboard with top left as (0,0).
+    struct BitBoard {
+        pub bitboard: [u8; 32],
+    }
+
+    impl BitBoard {
+        pub fn new() -> Self {
+            BitBoard {
+                // matrix: [0u8; 32],
+                bitboard: [
+                    0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8,
+                    0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0b11110000, 0b11111110,
+                    0b11111110, 0b11111110, 0b11111110,
+                ],
+            }
+        }
+
+        fn set_bit(&mut self, x: usize, y: usize, on: bool) {
+            assert!(x < 8);
+            assert!(y < 32); // TODO make 32 = 8 * dev count
+
+            if on {
+                self.bitboard[y] |= 0b1000_0000 >> x;
+            } else {
+                self.bitboard[y] &= !(0b1000_0000 >> x);
+            }
+        }
+
+        fn bit_at(&self, x: usize, y: usize) -> bool {
+            self.bitboard[y] & (0b1000_0000 >> x) != 0
         }
 
         /// Clears any full rows and returns how many rows were cleared.
@@ -384,15 +379,13 @@ mod tetris {
             // TODO: maybe can start looking forward from the base of the last placed shape to save
             // loop iterations.
 
-            println!("clearing rows");
             let mut base_idx = 31;
             let mut curr_idx = 31;
             loop {
-                println!("  clearing row {}: {}", curr_idx, self.matrix[curr_idx]);
-                if self.matrix[curr_idx] == u8::MAX {
-                    self.matrix[curr_idx] = 0;
+                if self.bitboard[curr_idx] == u8::MAX {
+                    self.bitboard[curr_idx] = 0;
                 } else {
-                    self.matrix[base_idx] = self.matrix[curr_idx];
+                    self.bitboard[base_idx] = self.bitboard[curr_idx];
                     base_idx -= 1;
                 }
                 curr_idx -= 1;
@@ -401,10 +394,6 @@ mod tetris {
                     break base_idx; // cleared = base - curr, but curr = 0
                 }
             }
-        }
-
-        fn replace_current_shape(&mut self) {
-            self.current_shape = Shape::T { x: 0, y: 0 }
         }
     }
 }

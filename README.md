@@ -2,7 +2,29 @@
 
 ## TODO
 
+- [ ] control LED matrix from rust via bitbang
+  - [x] set entire screen at once
+  - [ ] text + scrolling
+- [ ] get tetris working
+  - [x] main game logic of moving piece down and clearing rows
+  - [ ] move piece left and right
+  - [ ] rotate pieces
+  - [ ] score counting
+  - [ ] current piece shadow
+
+optimizations
+
+- [ ] matrix diffing engine for fewer updates
+- [ ] control LED matrix with SPI
 - [ ] replace `&[T]` with `Arc<T> / Rc<T>`
+
+---
+
+## Resources
+
+- https://github.com/arduino/ArduinoCore-avr
+- https://blog.rahix.de/005-avr-hal-millis/
+
 
 ---
 
