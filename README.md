@@ -22,9 +22,9 @@ optimizations
 
 ## Resources
 
-- https://github.com/arduino/ArduinoCore-avr
-- https://blog.rahix.de/005-avr-hal-millis/
-
+- Embedded rust book: https://docs.rust-embedded.org/book/intro/index.html
+- Arduino Uno std lib source: https://github.com/arduino/ArduinoCore-avr
+- Making a timer in rust: https://blog.rahix.de/005-avr-hal-millis/
 
 ---
 

@@ -1,10 +1,12 @@
 #![no_std]
 #![no_main]
 #![feature(generic_const_exprs)]
+#![feature(abi_avr_interrupt)]
 
 use arduino_hal::delay_ms;
 use panic_halt as _;
 use tetris::Tetris;
+use timer::millis;
 
 mod serial {
     use arduino_hal::{hal::usart::Usart0, DefaultClock};
@@ -37,6 +39,67 @@ mod serial {
                 let _ = ufmt::uwriteln!(serial, $($t)*);
             }
         };
+    }
+}
+
+mod timer {
+    use arduino_hal::pac::TC0;
+    use avr_device::interrupt::{self, Mutex};
+    use core::cell::Cell;
+
+    const PRESCALE_FACTOR: u32 = 1024;
+    const TIMER_COUNTS: u32 = 125;
+    // const PRESCALE_FACTOR: u32 = 64;
+    // const TIMER_COUNTS: u32 = 250;
+
+    /// | Prescale Factory | Timer Counts (MAX + 1) | Overflow Interval |
+    /// | ---              | ---                    | ---               |
+    /// | 64               | 250                    | 1 ms              |
+    /// | 256	           | 125                    | 2 ms              |
+    /// | 256	           | 250                    | 4 ms              |
+    /// | 1024	           | 125                    | 8 ms              |
+    /// | 1024	           | 250                    | 16 ms             |
+    ///
+    /// Finer resolution leads to higher CPU usage.
+    const MILLIS_INCREMENT: u32 = PRESCALE_FACTOR * TIMER_COUNTS / 16_000 /*clock freq*/;
+
+    static MILLIS_COUNTER: Mutex<Cell<u32>> = Mutex::new(Cell::new(0));
+
+    /// Interrupt sub-routine for the Clear Timer on Compare (CTC) hardware clock.
+    #[avr_device::interrupt(atmega328p)]
+    fn TIMER0_COMPA() {
+        // interrupt free critical section
+        interrupt::free(|cs| {
+            let counter_cell = MILLIS_COUNTER.borrow(cs);
+            let counter = counter_cell.get();
+            counter_cell.set(counter + MILLIS_INCREMENT);
+        })
+    }
+
+    /// Initialize a
+    pub fn init(tc0: TC0) {
+        // Enable Clear Timer on Compare (CTC) to have the timer interrupt on a custom interval.
+        tc0.tccr0a.write(|w| w.wgm0().ctc());
+        // Set the custom "counts" value to the Output Compare Register (`ocr0a`)
+        tc0.ocr0a.write(|w| w.bits(TIMER_COUNTS as u8));
+        tc0.tccr0b.write(|w| match PRESCALE_FACTOR {
+            8 => w.cs0().prescale_8(),
+            64 => w.cs0().prescale_64(),
+            256 => w.cs0().prescale_256(),
+            1024 => w.cs0().prescale_1024(),
+            _ => panic!("invalid TIMER_COUNTS value. Must be 8, 64, 256, 1024"),
+        });
+        tc0.timsk0.write(|w| w.ocie0a().set_bit());
+
+        interrupt::free(|cs| {
+            MILLIS_COUNTER.borrow(cs).set(0);
+        });
+    }
+
+    /// Milliseconds since chip start. About 8ms resolution. Overflows in ~50 days.
+    pub fn millis() -> u32 {
+        // https://github.com/arduino/ArduinoCore-avr/blob/321fca0bac806bdd36af8afbc13587f4b67eb5f1/cores/arduino/wiring.c#L65
+        interrupt::free(|cs| MILLIS_COUNTER.borrow(cs).get())
     }
 }
 
@@ -193,8 +256,6 @@ mod max7219 {
 }
 
 mod tetris {
-    use arduino_hal::delay_ms;
-
     use crate::println;
 
     const BLOCKS_PER_SHAPE: usize = 4;
@@ -401,6 +462,10 @@ mod tetris {
 #[arduino_hal::entry]
 fn main() -> ! {
     let dp = arduino_hal::Peripherals::take().unwrap();
+
+    crate::timer::init(dp.TC0);
+    unsafe { avr_device::interrupt::enable() }; // must enable interrupts for the timer to work
+
     let pins = arduino_hal::pins!(dp);
     let ser = arduino_hal::default_serial!(dp, pins, 57600);
 
@@ -419,7 +484,10 @@ fn main() -> ! {
         let screen = rotate_bits_left(screen);
         matrix.clear();
         matrix.set_board(&screen);
+        let m1 = millis();
         delay_ms(100);
+        let m2 = millis();
+        println!("millis: {}", m2 - m1);
 
         // let cats = [
         //     0b00100010, 0b01010101, 0b01011101, 0b10000000, 0b10100100, 0b10000000, 0b01000001,
