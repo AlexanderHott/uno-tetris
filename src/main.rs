@@ -3,41 +3,48 @@
 #![feature(generic_const_exprs)]
 #![feature(abi_avr_interrupt)]
 
-use arduino_hal::delay_ms;
 use panic_halt as _;
 use tetris::Tetris;
 use timer::millis;
 
 mod serial {
     use arduino_hal::{hal::usart::Usart0, DefaultClock};
+    use avr_device::interrupt::{self, Mutex};
     use core::cell::RefCell;
 
-    pub struct Console(pub RefCell<Option<Usart0<DefaultClock>>>);
-    /// SAFETY: There is only one "thread", so `Send`ing it isn't possible.
-    unsafe impl Send for Console {}
-    unsafe impl Sync for Console {}
+    type Console = Mutex<RefCell<Option<Usart0<DefaultClock>>>>;
 
-    pub static CONSOLE: Console = Console(RefCell::new(None));
+    pub static CONSOLE: Console = Mutex::new(RefCell::new(None));
 
     pub fn init(usart: Usart0<DefaultClock>) {
-        *CONSOLE.0.borrow_mut() = Some(usart);
+        // interrupt free critical section
+        interrupt::free(|cs| {
+            let mut rc = CONSOLE.borrow(cs).borrow_mut();
+            *rc = Some(usart);
+        })
     }
 
     #[macro_export]
     macro_rules! print {
-        ($($t:tt)*) => {
-            if let Some(serial) = crate::serial::CONSOLE.0.borrow_mut().as_mut() {
-                let _ = ufmt::uwrite!(serial, $($t)*);
-            }
+        ($($arg:tt)*) => {
+            avr_device::interrupt::free(|cs| {
+                let mut console = crate::serial::CONSOLE.borrow(cs).borrow_mut();
+                if let Some(usart) = console.as_mut() {
+                    let _ = ufmt::uwrite!(usart, $($arg)*);
+                }
+            })
         };
     }
 
     #[macro_export]
     macro_rules! println {
-        ($($t:tt)*) => {
-            if let Some(serial) = crate::serial::CONSOLE.0.borrow_mut().as_mut() {
-                let _ = ufmt::uwriteln!(serial, $($t)*);
-            }
+        ($($arg:tt)*) => {
+            avr_device::interrupt::free(|cs| {
+                let mut console = crate::serial::CONSOLE.borrow(cs).borrow_mut();
+                if let Some(usart) = console.as_mut() {
+                    let _ = ufmt::uwriteln!(usart, $($arg)*);
+                }
+            })
         };
     }
 }
@@ -283,7 +290,6 @@ mod tetris {
         /// positive. Returns an array of (x,y) absolute (not relative) points in the 8x32
         /// coordinate system.
         fn get_absolute_points(&self) -> [(usize, usize); BLOCKS_PER_SHAPE] {
-            // TODO: maybe change to abs cus it can be done here;
             match self {
                 Shape::T { x, y } => [
                     (x + 0, y + 0),
@@ -303,6 +309,23 @@ mod tetris {
                     (x + 0, y + 2),
                     (x + 0, y + 3),
                 ],
+            }
+        }
+
+        fn height(&self) -> usize {
+            match self {
+                Shape::T { .. } => 2,
+                Shape::L { .. } => 3,
+                Shape::I { .. } => 4,
+            }
+        }
+
+        /// returns a u8 where all the 1's represent columns where the shape is in
+        fn column_mask(&self) -> u8 {
+            match self {
+                Shape::T { x, .. } => 0b11100000 >> x,
+                Shape::L { x, .. } => 0b11000000 >> x,
+                Shape::I { x, .. } => 0b10000000 >> x,
             }
         }
 
@@ -341,6 +364,7 @@ mod tetris {
 
     pub struct Tetris {
         current_shape: Shape,
+        shadow_shape: Option<Shape>,
         board: BitBoard,
     }
 
@@ -349,6 +373,7 @@ mod tetris {
             println!("new tetris");
             Tetris {
                 current_shape: Shape::I { x: 7, y: 0 },
+                shadow_shape: None,
                 board: BitBoard::new(),
             }
         }
@@ -357,7 +382,9 @@ mod tetris {
         /// `true` if it moved.
         pub fn try_move_current_shape_down(&mut self) -> bool {
             if self.can_move_down(&self.current_shape) {
+                println!("    can move down");
                 self.current_shape.set_y(self.current_shape.y() + 1);
+                println!("    current shape y {}", self.current_shape.y());
                 return true;
             }
             return false;
@@ -365,7 +392,8 @@ mod tetris {
 
         // TODO: make random without replacement (deck of cards)
         fn replace_current_shape(&mut self) {
-            self.current_shape = Shape::T { x: 0, y: 0 }
+            self.current_shape = Shape::T { x: 0, y: 0 };
+            self.shadow_shape = None;
         }
 
         // TODO: get bounding box
@@ -378,23 +406,64 @@ mod tetris {
             return true;
         }
 
-        pub fn render_board(&mut self) -> [u8; 32] {
-            // clear current piece from board
+        fn update_shadow(&mut self) {
+            let column_mask = self.current_shape.column_mask();
+            let shadow_bottom = self.board.highest_free_row(column_mask);
+            let shadow_top = shadow_bottom - self.current_shape.height() + 1;
+            println!("b {} t {}", shadow_bottom, shadow_top);
+            let mut shadow_shape = self.current_shape.clone();
+            shadow_shape.set_y(shadow_top);
+            self.shadow_shape = Some(shadow_shape)
+        }
+
+        pub fn render_board(
+            &mut self,
+            should_move_current_shape_down: bool,
+            render_shadow: bool,
+        ) -> [u8; 32] {
+            if self.shadow_shape.is_none() {
+                self.update_shadow();
+            }
+
+            // clear current piece + shadow from board so that we know where the legal places to
+            // put a piece are.
             for (x, y) in self.current_shape.get_absolute_points() {
                 self.board.set_bit(x, y, false);
             }
+            for (x, y) in self
+                .shadow_shape
+                .expect("should be some after .update_shadow()")
+                .get_absolute_points()
+            {
+                self.board.set_bit(x, y, false);
+            }
 
-            let moved = self.try_move_current_shape_down();
+            let mut did_move = false;
+            if should_move_current_shape_down {
+                println!("  trying to move shape down");
+                did_move = self.try_move_current_shape_down();
+            }
 
             // add current piece back
             for (x, y) in self.current_shape.get_absolute_points() {
                 self.board.set_bit(x, y, true);
             }
+            if render_shadow {
+                for (x, y) in self
+                    .shadow_shape
+                    .expect("should be some after .update_shadow()")
+                    .get_absolute_points()
+                {
+                    self.board.set_bit(x, y, true);
+                }
+            }
 
-            if !moved {
-                self.board.clear_full_rows();
-                // TODO: check if we can replace the shape, otherwise end the game
-                self.replace_current_shape();
+            if should_move_current_shape_down {
+                if !did_move {
+                    self.board.clear_full_rows();
+                    // TODO: check if we can replace the shape, otherwise end the game
+                    self.replace_current_shape();
+                }
             }
 
             self.board.bitboard
@@ -416,6 +485,18 @@ mod tetris {
                     0b11111110, 0b11111110, 0b11111110,
                 ],
             }
+        }
+
+        fn highest_free_row(&self, column_mask: u8) -> usize {
+            // TODO: recalc bounds based on bottom height of shape.
+            // we shouldn't even be doing this if we are unable to place the shape
+            // which is the game-over condition
+            for i in 1..32 {
+                if self.bitboard[i] & column_mask != 0 {
+                    return i - 1;
+                }
+            }
+            return 31;
         }
 
         fn set_bit(&mut self, x: usize, y: usize, on: bool) {
@@ -464,7 +545,9 @@ fn main() -> ! {
     let dp = arduino_hal::Peripherals::take().unwrap();
 
     crate::timer::init(dp.TC0);
-    unsafe { avr_device::interrupt::enable() }; // must enable interrupts for the timer to work
+    // must enable interrupts for the timer to work
+    // SAFETY: This is not called from inside a critical section.
+    unsafe { avr_device::interrupt::enable() };
 
     let pins = arduino_hal::pins!(dp);
     let ser = arduino_hal::default_serial!(dp, pins, 57600);
@@ -479,15 +562,48 @@ fn main() -> ! {
     matrix.init();
     let mut tetris = Tetris::new();
 
+    const MOVE_DOWN_TIME: u32 = 1000;
+    const BLINK_TIME: u32 = 100;
+
     loop {
-        let screen = tetris.render_board();
-        let screen = rotate_bits_left(screen);
-        matrix.clear();
-        matrix.set_board(&screen);
-        let m1 = millis();
-        delay_ms(100);
-        let m2 = millis();
-        println!("millis: {}", m2 - m1);
+        // we handle the main game loop of tetris because it requires us to poll for new frames
+        // and render them on the LED matrix
+
+        // pseudo code
+        // while not game over {
+        //   get user input
+        //   do action based on user input
+        //   if time since last moved down - now > 1s {
+        //      move current piece down
+        //   }
+        //   ask tetris for frame
+        //   render new frame
+        // }
+
+        let game_over = false;
+        let mut last_shape_move = millis();
+        let mut render_shadow = false;
+        let mut last_shadow_blink = millis();
+        while !game_over {
+            // TODO check user input
+            // TODO match user_input {}
+
+            let now = millis();
+            let should_move_current_shape_down = now - last_shape_move > MOVE_DOWN_TIME;
+
+            if should_move_current_shape_down {
+                last_shape_move = now;
+            }
+            if now - last_shadow_blink > BLINK_TIME {
+                render_shadow = !render_shadow;
+                last_shadow_blink = now;
+            }
+
+            let screen = tetris.render_board(should_move_current_shape_down, render_shadow);
+            let screen = rotate_bits_left(screen);
+            matrix.clear();
+            matrix.set_board(&screen);
+        }
 
         // let cats = [
         //     0b00100010, 0b01010101, 0b01011101, 0b10000000, 0b10100100, 0b10000000, 0b01000001,
