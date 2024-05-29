@@ -192,7 +192,7 @@ mod max7219 {
 
             self.display_test_mode(false);
             self.scan_limit(7);
-            self.intensity(0);
+            self.intensity(0x0);
             self.decode_mode(false);
             self.shutdown_mode(false);
         }
@@ -289,7 +289,7 @@ mod tetris {
         /// Shapes are always positioned at the top-left corner, so all relative offsets are
         /// positive. Returns an array of (x,y) absolute (not relative) points in the 8x32
         /// coordinate system.
-        fn get_absolute_points(&self) -> [(usize, usize); BLOCKS_PER_SHAPE] {
+        fn absolute_points(&self) -> [(usize, usize); BLOCKS_PER_SHAPE] {
             match self {
                 Shape::T { x, y } => [
                     (x + 0, y + 0),
@@ -312,11 +312,42 @@ mod tetris {
             }
         }
 
+        fn relative_points(&self, x: usize, y: usize) -> [(usize, usize); BLOCKS_PER_SHAPE] {
+            match self {
+                Shape::T { .. } => [
+                    (x + 0, y + 0),
+                    (x + 1, y + 0),
+                    (x + 2, y + 0),
+                    (x + 1, y + 1),
+                ],
+                Shape::L { .. } => [
+                    (x + 0, y + 0),
+                    (x + 0, y + 1),
+                    (x + 0, y + 2),
+                    (x + 1, y + 2),
+                ],
+                Shape::I { .. } => [
+                    (x + 0, y + 0),
+                    (x + 0, y + 1),
+                    (x + 0, y + 2),
+                    (x + 0, y + 3),
+                ],
+            }
+        }
+
         fn height(&self) -> usize {
             match self {
                 Shape::T { .. } => 2,
                 Shape::L { .. } => 3,
                 Shape::I { .. } => 4,
+            }
+        }
+
+        fn width(&self) -> usize {
+            match self {
+                Shape::T { .. } => 3,
+                Shape::L { .. } => 2,
+                Shape::I { .. } => 1,
             }
         }
 
@@ -378,13 +409,51 @@ mod tetris {
             }
         }
 
+        /// Clears the current_shape and shadow_shape from the screen so that collision detection
+        /// can work correctly.
+        fn clear_current_shapes(&mut self) {
+            for (x, y) in self.current_shape.absolute_points() {
+                self.board.set_bit(x, y, false);
+            }
+            if let Some(shadow_shape) = self.shadow_shape {
+                for (x, y) in shadow_shape.absolute_points() {
+                    self.board.set_bit(x, y, false);
+                }
+            }
+        }
+
+        pub fn move_current_shape_left(&mut self) {
+            let x = self.current_shape.x();
+            if x == 0 {
+                return;
+            }
+            self.clear_current_shapes();
+            self.current_shape.set_x(x - 1);
+            self.shadow_shape = None;
+        }
+
+        pub fn move_current_shape_right(&mut self) {
+            let x = self.current_shape.x() + self.current_shape.width() - 1;
+            if x == 7 {
+                return;
+            }
+            self.clear_current_shapes();
+            self.current_shape.set_x(self.current_shape.x() + 1);
+            self.shadow_shape = None;
+        }
+
+        pub fn fast_place_current_shape(&mut self) {
+            self.clear_current_shapes();
+            self.current_shape
+                .set_y(self.shadow_shape.expect("should exist").y());
+            self.shadow_shape = None
+        }
+
         /// Tries to move the current active shape down. Returns
         /// `true` if it moved.
         pub fn try_move_current_shape_down(&mut self) -> bool {
             if self.can_move_down(&self.current_shape) {
-                println!("    can move down");
                 self.current_shape.set_y(self.current_shape.y() + 1);
-                println!("    current shape y {}", self.current_shape.y());
                 return true;
             }
             return false;
@@ -392,13 +461,14 @@ mod tetris {
 
         // TODO: make random without replacement (deck of cards)
         fn replace_current_shape(&mut self) {
-            self.current_shape = Shape::T { x: 0, y: 0 };
+            // self.current_shape = Shape::T { x: 0, y: 0 };
+            self.current_shape = Shape::I { x: 0, y: 0 };
             self.shadow_shape = None;
         }
 
         // TODO: get bounding box
         fn can_move_down(&self, shape: &Shape) -> bool {
-            for (x, y) in shape.get_absolute_points() {
+            for (x, y) in shape.absolute_points() {
                 if y >= 31 || self.board.bit_at(x, y + 1) {
                     return false;
                 }
@@ -408,11 +478,9 @@ mod tetris {
 
         fn update_shadow(&mut self) {
             let column_mask = self.current_shape.column_mask();
-            let shadow_bottom = self.board.highest_free_row(column_mask);
-            let shadow_top = shadow_bottom - self.current_shape.height() + 1;
-            println!("b {} t {}", shadow_bottom, shadow_top);
+            let shadow_height = self.board.highest_free_row(self.current_shape, column_mask);
             let mut shadow_shape = self.current_shape.clone();
-            shadow_shape.set_y(shadow_top);
+            shadow_shape.set_y(shadow_height);
             self.shadow_shape = Some(shadow_shape)
         }
 
@@ -425,34 +493,22 @@ mod tetris {
                 self.update_shadow();
             }
 
-            // clear current piece + shadow from board so that we know where the legal places to
-            // put a piece are.
-            for (x, y) in self.current_shape.get_absolute_points() {
-                self.board.set_bit(x, y, false);
-            }
-            for (x, y) in self
-                .shadow_shape
-                .expect("should be some after .update_shadow()")
-                .get_absolute_points()
-            {
-                self.board.set_bit(x, y, false);
-            }
+            self.clear_current_shapes();
 
             let mut did_move = false;
             if should_move_current_shape_down {
-                println!("  trying to move shape down");
                 did_move = self.try_move_current_shape_down();
             }
 
             // add current piece back
-            for (x, y) in self.current_shape.get_absolute_points() {
+            for (x, y) in self.current_shape.absolute_points() {
                 self.board.set_bit(x, y, true);
             }
             if render_shadow {
                 for (x, y) in self
                     .shadow_shape
                     .expect("should be some after .update_shadow()")
-                    .get_absolute_points()
+                    .absolute_points()
                 {
                     self.board.set_bit(x, y, true);
                 }
@@ -487,16 +543,24 @@ mod tetris {
             }
         }
 
-        fn highest_free_row(&self, column_mask: u8) -> usize {
+        fn highest_free_row(&self, shape: Shape, column_mask: u8) -> usize {
             // TODO: recalc bounds based on bottom height of shape.
             // we shouldn't even be doing this if we are unable to place the shape
             // which is the game-over condition
             for i in 1..32 {
-                if self.bitboard[i] & column_mask != 0 {
+                if i + shape.height() - 1 >= 32 {
                     return i - 1;
                 }
+                for (x, y) in shape.relative_points(shape.x(), i) {
+                    if self.bit_at(x, y) {
+                        println!("  not ok at {} {}; hfr: {}", x, y, i - 1);
+                        return i - 1;
+                    }
+                }
+                println!("ok at {}", i);
             }
-            return 31;
+            println!("all clear {}", 31 - shape.height());
+            return 31 - shape.height() + 1;
         }
 
         fn set_bit(&mut self, x: usize, y: usize, on: bool) {
@@ -540,6 +604,38 @@ mod tetris {
     }
 }
 
+/*
+#[arduino_hal::entry]
+fn main() -> ! {
+    let dp = arduino_hal::Peripherals::take().unwrap();
+    let pins = arduino_hal::pins!(dp);
+
+    let ser = arduino_hal::default_serial!(dp, pins, 57600);
+    serial::init(ser);
+
+    let btn1 = pins.d2.into_pull_up_input().downgrade();
+    let btn2 = pins.d3.into_pull_up_input().downgrade();
+    let btn3 = pins.d4.into_pull_up_input().downgrade();
+    let btn4 = pins.d5.into_pull_up_input().downgrade();
+
+    loop {
+        if btn1.is_high() {
+            println!("btn 1 down");
+        }
+        if btn2.is_high() {
+            println!("btn 2 down");
+        }
+        if btn3.is_high() {
+            println!("btn 3 down");
+        }
+        if btn4.is_high() {
+            println!("btn 4 down");
+        }
+    }
+}
+*/
+
+// /*
 #[arduino_hal::entry]
 fn main() -> ! {
     let dp = arduino_hal::Peripherals::take().unwrap();
@@ -557,9 +653,20 @@ fn main() -> ! {
     let din = pins.d13.into_output().downgrade();
     let cs = pins.d12.into_output().downgrade();
     let clk = pins.d11.into_output().downgrade();
+
+    let right_btn = pins.d2.into_pull_up_input().downgrade();
+    let up_btn = pins.d3.into_pull_up_input().downgrade();
+    let down_btn = pins.d4.into_pull_up_input().downgrade();
+    let left_btn = pins.d5.into_pull_up_input().downgrade();
+    let mut right_btn_pressed = false;
+    let mut up_btn_pressed = false;
+    let mut down_btn_pressed = false;
+    let mut left_btn_pressed = false;
+
     // TODO: hard code 8 as a constant. It isn't really generic
     let mut matrix: max7219::Max7219<8, 4> = max7219::Max7219::new(din, cs, clk);
     matrix.init();
+    // matrix.intensity(0xF);
     let mut tetris = Tetris::new();
 
     const MOVE_DOWN_TIME: u32 = 1000;
@@ -585,6 +692,30 @@ fn main() -> ! {
         let mut render_shadow = false;
         let mut last_shadow_blink = millis();
         while !game_over {
+            // handle user input
+            if right_btn.is_high() && !right_btn_pressed {
+                right_btn_pressed = true;
+                tetris.move_current_shape_right();
+            } else if right_btn.is_low() {
+                right_btn_pressed = false;
+            }
+            if up_btn.is_high() && !up_btn_pressed {
+                up_btn_pressed = true;
+            } else if up_btn.is_low() {
+                up_btn_pressed = false;
+            }
+            if down_btn.is_high() && !down_btn_pressed {
+                down_btn_pressed = true;
+                tetris.fast_place_current_shape()
+            } else if down_btn.is_low() {
+                down_btn_pressed = false;
+            }
+            if left_btn.is_high() && !left_btn_pressed {
+                left_btn_pressed = true;
+                tetris.move_current_shape_left();
+            } else if left_btn.is_low() {
+                left_btn_pressed = false;
+            }
             // TODO check user input
             // TODO match user_input {}
 
@@ -604,97 +735,12 @@ fn main() -> ! {
             matrix.clear();
             matrix.set_board(&screen);
         }
-
-        // let cats = [
-        //     0b00100010, 0b01010101, 0b01011101, 0b10000000, 0b10100100, 0b10000000, 0b01000001,
-        //     0b00111110, 0b00100010, 0b01010101, 0b01011101, 0b10000000, 0b10100100, 0b10000000,
-        //     0b01000001, 0b00111110, 0b00100010, 0b01010101, 0b01011101, 0b10000000, 0b10100100,
-        //     0b10000000, 0b01000001, 0b00111110, 0b00100010, 0b01010101, 0b01011101, 0b10000000,
-        //     0b10100100, 0b10000000, 0b01000001, 0b00111110,
-        // ];
-        // let cats_rotated = rotate_bits_left(cats);
-        // matrix.set_board(&cats_rotated);
-        //
-        // delay_ms(1000);
-        // matrix.set_board(&[
-        //     0b00100010, 0b00100010, 0b00100010, 0b00100010, 0b01010101, 0b01010101, 0b01010101,
-        //     0b01010101, 0b01011101, 0b01011101, 0b01011101, 0b01011101, 0b10000000, 0b10000000,
-        //     0b10000000, 0b10000000, 0b10100100, 0b10100100, 0b10100100, 0b10100100, 0b10000000,
-        //     0b10000000, 0b10000000, 0b10000000, 0b01000001, 0b01000001, 0b01000001, 0b01000001,
-        //     0b00111110, 0b00111110, 0b00111110, 0b00111110,
-        // ]);
-        // delay_ms(1000);
-
-        // matrix.set_board(&[
-        //   0b00100010, 0b00100010, 0b00100010, 0b00100010,
-        //   0b01010101, 0b01010101, 0b01010101, 0b01010101,
-        //   0b01011101, 0b01011101, 0b01011101, 0b01011101,
-        //   0b10000000, 0b10000000, 0b10000000, 0b10000000,
-        //   0b10100100, 0b10100100, 0b10100100, 0b10100100,
-        //   0b10000000, 0b10000000, 0b10000000, 0b10000000,
-        //   0b01000001, 0b01000001, 0b01000001, 0b01000001,
-        //   0b00111110, 0b00111110, 0b00111110, 0b00111110,
-        // ]);
-        // delay_ms(1000);
-        // matrix.set_board(&[
-        //     0b01000100, 0b01000100, 0b01000100, 0b01000100, 0b10101010, 0b10101010, 0b10101010,
-        //     0b10101010, 0b10111010, 0b10111010, 0b10111010, 0b10111010, 0b00000001, 0b00000001,
-        //     0b00000001, 0b00000001, 0b01001001, 0b01001001, 0b01001001, 0b01001001, 0b00000001,
-        //     0b00000001, 0b00000001, 0b00000001, 0b10000010, 0b10000010, 0b10000010, 0b10000010,
-        //     0b01111100, 0b01111100, 0b01111100, 0b01111100,
-        // ]);
-        // delay_ms(1000);
     }
 }
-
+// */
 /// Rotates a 32x8 bit matrix left (CCW) into a 8x32 bit matrix.
 /// It works by turning the `u8`s into bits, rotating the matrix, and reinterpreting the bits as
-/// `u8`s
-///    00000000,
-///    00000000,
-///    00000000,
-///    00000000,
-///    00000000,
-///    00000000,
-///    00000000,
-///    00000000,
-///    
-///    00000000,
-///    00000000,
-///    00000000,
-///    00000000,
-///    00000000,
-///    00000000,
-///    00000000,
-///    00000000,
-///    
-///    00000000,
-///    00000000,
-///    00000000,
-///    00000000,
-///    00000000,
-///    00000000,
-///    00000000,
-///    00000000,
-///    
-///    00000000,
-///    00000000,
-///    00000000,
-///    00000000,
-///    00000000,
-///    00000000,
-///    01000000,
-///    11100000,
-///
-///
-///    00000000, 00000000, 00000000, 00000000,
-///    00000000, 00000000, 00000000, 00000000,
-///    00000000, 00000000, 00000000, 00000000,
-///    00000000, 00000000, 00000000, 00000000,
-///    00000000, 00000000, 00000000, 00000000,
-///    00000000, 00000000, 00000000, 00000001,
-///    00000000, 00000000, 00000000, 00000011,
-///    00000000, 00000000, 00000000, 00000001
+/// `u8`s.
 pub fn rotate_bits_left(arr: [u8; 32]) -> [u8; 32] {
     let mut result = [0u8; 32];
 
