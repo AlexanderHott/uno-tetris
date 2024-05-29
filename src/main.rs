@@ -3,6 +3,8 @@
 #![feature(generic_const_exprs)]
 #![feature(abi_avr_interrupt)]
 
+use core::num::NonZeroU32;
+
 use panic_halt as _;
 use tetris::Tetris;
 use timer::millis;
@@ -107,6 +109,50 @@ mod timer {
     pub fn millis() -> u32 {
         // https://github.com/arduino/ArduinoCore-avr/blob/321fca0bac806bdd36af8afbc13587f4b67eb5f1/cores/arduino/wiring.c#L65
         interrupt::free(|cs| MILLIS_COUNTER.borrow(cs).get())
+    }
+}
+
+mod rand {
+    /// Random number generator based on
+    /// https://en.wikipedia.org/wiki/Xorshift
+    pub struct Rand {
+        state: u32,
+    }
+
+    impl Rand {
+        pub fn new() -> Self {
+            Rand { state: 1 }
+        }
+
+        pub fn from_seed(seed: core::num::NonZeroU32) -> Self {
+            Rand { state: seed.get() }
+        }
+
+        pub fn rand(&mut self) -> u32 {
+            let mut x = self.state;
+            x ^= x << 13;
+            x ^= x >> 17;
+            x ^= x << 5;
+            self.state = x;
+
+            self.state
+        }
+
+        pub fn randrange(&mut self, lower: u32, upper: u32) -> u32 {
+            let range = upper - lower;
+            let random = self.rand() % range;
+
+            return random + lower;
+        }
+
+        pub fn shuffle<'a, T>(&'_ mut self, array: &'a mut [T]) -> &'a mut [T] {
+            let n = array.len() as u32;
+            for i in 0..n - 2 {
+                let j = self.randrange(i, n) as usize;
+                array.swap(i as usize, j);
+            }
+            array
+        }
     }
 }
 
@@ -553,13 +599,10 @@ mod tetris {
                 }
                 for (x, y) in shape.relative_points(shape.x(), i) {
                     if self.bit_at(x, y) {
-                        println!("  not ok at {} {}; hfr: {}", x, y, i - 1);
                         return i - 1;
                     }
                 }
-                println!("ok at {}", i);
             }
-            println!("all clear {}", 31 - shape.height());
             return 31 - shape.height() + 1;
         }
 
@@ -604,38 +647,6 @@ mod tetris {
     }
 }
 
-/*
-#[arduino_hal::entry]
-fn main() -> ! {
-    let dp = arduino_hal::Peripherals::take().unwrap();
-    let pins = arduino_hal::pins!(dp);
-
-    let ser = arduino_hal::default_serial!(dp, pins, 57600);
-    serial::init(ser);
-
-    let btn1 = pins.d2.into_pull_up_input().downgrade();
-    let btn2 = pins.d3.into_pull_up_input().downgrade();
-    let btn3 = pins.d4.into_pull_up_input().downgrade();
-    let btn4 = pins.d5.into_pull_up_input().downgrade();
-
-    loop {
-        if btn1.is_high() {
-            println!("btn 1 down");
-        }
-        if btn2.is_high() {
-            println!("btn 2 down");
-        }
-        if btn3.is_high() {
-            println!("btn 3 down");
-        }
-        if btn4.is_high() {
-            println!("btn 4 down");
-        }
-    }
-}
-*/
-
-// /*
 #[arduino_hal::entry]
 fn main() -> ! {
     let dp = arduino_hal::Peripherals::take().unwrap();
@@ -671,6 +682,22 @@ fn main() -> ! {
 
     const MOVE_DOWN_TIME: u32 = 1000;
     const BLINK_TIME: u32 = 100;
+
+    // get random seed from 10 analog samples
+    // a0 should be disconnected
+    let mut seed = 0;
+    let mut adc = arduino_hal::Adc::new(dp.ADC, Default::default());
+    let a0 = pins.a0.into_analog_input(&mut adc);
+    for i in 1..10 {
+        let an = a0.analog_read(&mut adc);
+        seed += i * an;
+    }
+    let seed = match NonZeroU32::new(seed as u32) {
+        Some(s) => s,
+        None => NonZeroU32::new(seed as u32 + 1).expect("shoudn't be zero after an +1"),
+    };
+
+    let mut rand = rand::Rand::from_seed(seed);
 
     loop {
         // we handle the main game loop of tetris because it requires us to poll for new frames
@@ -737,7 +764,7 @@ fn main() -> ! {
         }
     }
 }
-// */
+///
 /// Rotates a 32x8 bit matrix left (CCW) into a 8x32 bit matrix.
 /// It works by turning the `u8`s into bits, rotating the matrix, and reinterpreting the bits as
 /// `u8`s.
