@@ -3,6 +3,8 @@
 #![feature(generic_const_exprs)]
 #![feature(abi_avr_interrupt)]
 
+use core::num::NonZeroU32;
+
 use panic_halt as _;
 use tetris::Tetris;
 use timer::millis;
@@ -136,6 +138,7 @@ mod rand {
             self.state
         }
 
+        /// Random u32 in [lower, upper)
         pub fn randrange(&mut self, lower: u32, upper: u32) -> u32 {
             let range = upper - lower;
             let random = self.rand() % range;
@@ -307,7 +310,7 @@ mod max7219 {
 }
 
 mod tetris {
-    use crate::println;
+    use crate::{println, rand::Rand};
 
     const BLOCKS_PER_SHAPE: usize = 4;
 
@@ -330,6 +333,7 @@ mod tetris {
     }
 
     impl Shape {
+        const NUM_SHAPES: u32 = 3;
         /// Shapes are always positioned at the top-left corner, so all relative offsets are
         /// positive. Returns an array of (x,y) absolute (not relative) points in the 8x32
         /// coordinate system.
@@ -441,15 +445,17 @@ mod tetris {
         current_shape: Shape,
         shadow_shape: Option<Shape>,
         board: BitBoard,
+        rand: Rand,
     }
 
     impl Tetris {
-        pub fn new() -> Self {
+        pub fn new(rand: Rand) -> Self {
             println!("new tetris");
             Tetris {
                 current_shape: Shape::I { x: 7, y: 0 },
                 shadow_shape: None,
                 board: BitBoard::new(),
+                rand,
             }
         }
 
@@ -467,21 +473,24 @@ mod tetris {
         }
 
         pub fn move_current_shape_left(&mut self) {
+            println!("moving left");
             let x = self.current_shape.x();
             if x == 0 {
+                println!("oob");
                 return;
             }
+            self.clear_current_shapes();
             // check for collisions
             for (x, y) in self
                 .current_shape
                 .relative_points(self.current_shape.x() - 1, self.current_shape.y())
             {
                 if self.board.bit_at(x, y) {
+                    println!("collision at {} {}", x, y);
                     return;
                 }
             }
 
-            self.clear_current_shapes();
             self.current_shape.set_x(x - 1);
             self.shadow_shape = None;
         }
@@ -491,6 +500,7 @@ mod tetris {
             if x == 7 {
                 return;
             }
+            self.clear_current_shapes();
             // check for collisions
             for (x, y) in self
                 .current_shape
@@ -501,7 +511,6 @@ mod tetris {
                 }
             }
 
-            self.clear_current_shapes();
             self.current_shape.set_x(self.current_shape.x() + 1);
             self.shadow_shape = None;
         }
@@ -525,8 +534,15 @@ mod tetris {
 
         // TODO: make random without replacement (deck of cards)
         fn replace_current_shape(&mut self) {
+            let next_shape = self.rand.randrange(0, Shape::NUM_SHAPES);
+            let shape = match next_shape {
+                0 => Shape::I { x: 3, y: 1 },
+                1 => Shape::T { x: 2, y: 1 },
+                2 => Shape::L { x: 3, y: 1 },
+                _ => unreachable!(),
+            };
             // self.current_shape = Shape::T { x: 0, y: 0 };
-            self.current_shape = Shape::I { x: 0, y: 0 };
+            self.current_shape = shape;
             self.shadow_shape = None;
         }
 
@@ -696,26 +712,27 @@ fn main() -> ! {
     let mut matrix: max7219::Max7219<8, 4> = max7219::Max7219::new(din, cs, clk);
     matrix.init();
     // matrix.intensity(0xF);
-    let mut tetris = Tetris::new();
-
-    const MOVE_DOWN_TIME: u32 = 1000;
-    const BLINK_TIME: u32 = 100;
 
     // get random seed from 10 analog samples
     // a0 should be disconnected
-    // let mut seed = 0;
-    // let mut adc = arduino_hal::Adc::new(dp.ADC, Default::default());
-    // let a0 = pins.a0.into_analog_input(&mut adc);
-    // for i in 1..10 {
-    //     let an = a0.analog_read(&mut adc);
-    //     seed += i * an;
-    // }
-    // let seed = match NonZeroU32::new(seed as u32) {
-    //     Some(s) => s,
-    //     None => NonZeroU32::new(seed as u32 + 1).expect("shoudn't be zero after an +1"),
-    // };
-    //
-    // let mut rand = rand::Rand::from_seed(seed);
+    let mut seed = 0;
+    let mut adc = arduino_hal::Adc::new(dp.ADC, Default::default());
+    let a0 = pins.a0.into_analog_input(&mut adc);
+    for i in 1..10 {
+        let an = a0.analog_read(&mut adc);
+        seed += i * an;
+    }
+    let seed = match NonZeroU32::new(seed as u32) {
+        Some(s) => s,
+        None => NonZeroU32::new(seed as u32 + 1).expect("shoudn't be zero after an +1"),
+    };
+
+    let rand = rand::Rand::from_seed(seed);
+
+    let mut tetris = Tetris::new(rand);
+
+    const MOVE_DOWN_TIME: u32 = 1000;
+    const BLINK_TIME: u32 = 100;
 
     loop {
         // we handle the main game loop of tetris because it requires us to poll for new frames
@@ -751,8 +768,6 @@ fn main() -> ! {
             } else if left_btn.is_low() {
                 left_btn_pressed = false;
             }
-            // TODO check user input
-            // TODO match user_input {}
 
             let now = millis();
             let should_move_current_shape_down = now - last_shape_move > MOVE_DOWN_TIME;
