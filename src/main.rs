@@ -3,8 +3,6 @@
 #![feature(generic_const_exprs)]
 #![feature(abi_avr_interrupt)]
 
-use core::num::NonZeroU32;
-
 use panic_halt as _;
 use tetris::Tetris;
 use timer::millis;
@@ -473,6 +471,16 @@ mod tetris {
             if x == 0 {
                 return;
             }
+            // check for collisions
+            for (x, y) in self
+                .current_shape
+                .relative_points(self.current_shape.x() - 1, self.current_shape.y())
+            {
+                if self.board.bit_at(x, y) {
+                    return;
+                }
+            }
+
             self.clear_current_shapes();
             self.current_shape.set_x(x - 1);
             self.shadow_shape = None;
@@ -483,6 +491,16 @@ mod tetris {
             if x == 7 {
                 return;
             }
+            // check for collisions
+            for (x, y) in self
+                .current_shape
+                .relative_points(self.current_shape.x() + 1, self.current_shape.y())
+            {
+                if self.board.bit_at(x, y) {
+                    return;
+                }
+            }
+
             self.clear_current_shapes();
             self.current_shape.set_x(self.current_shape.x() + 1);
             self.shadow_shape = None;
@@ -685,39 +703,29 @@ fn main() -> ! {
 
     // get random seed from 10 analog samples
     // a0 should be disconnected
-    let mut seed = 0;
-    let mut adc = arduino_hal::Adc::new(dp.ADC, Default::default());
-    let a0 = pins.a0.into_analog_input(&mut adc);
-    for i in 1..10 {
-        let an = a0.analog_read(&mut adc);
-        seed += i * an;
-    }
-    let seed = match NonZeroU32::new(seed as u32) {
-        Some(s) => s,
-        None => NonZeroU32::new(seed as u32 + 1).expect("shoudn't be zero after an +1"),
-    };
-
-    let mut rand = rand::Rand::from_seed(seed);
+    // let mut seed = 0;
+    // let mut adc = arduino_hal::Adc::new(dp.ADC, Default::default());
+    // let a0 = pins.a0.into_analog_input(&mut adc);
+    // for i in 1..10 {
+    //     let an = a0.analog_read(&mut adc);
+    //     seed += i * an;
+    // }
+    // let seed = match NonZeroU32::new(seed as u32) {
+    //     Some(s) => s,
+    //     None => NonZeroU32::new(seed as u32 + 1).expect("shoudn't be zero after an +1"),
+    // };
+    //
+    // let mut rand = rand::Rand::from_seed(seed);
 
     loop {
         // we handle the main game loop of tetris because it requires us to poll for new frames
         // and render them on the LED matrix
 
-        // pseudo code
-        // while not game over {
-        //   get user input
-        //   do action based on user input
-        //   if time since last moved down - now > 1s {
-        //      move current piece down
-        //   }
-        //   ask tetris for frame
-        //   render new frame
-        // }
-
         let game_over = false;
         let mut last_shape_move = millis();
         let mut render_shadow = false;
         let mut last_shadow_blink = millis();
+
         while !game_over {
             // handle user input
             if right_btn.is_high() && !right_btn_pressed {
