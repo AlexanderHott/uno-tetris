@@ -2,7 +2,7 @@
 #![no_main]
 #![feature(generic_const_exprs)]
 #![feature(abi_avr_interrupt)]
-
+#[deny(unused_must_use)]
 use core::num::NonZeroU32;
 
 use panic_halt as _;
@@ -239,7 +239,7 @@ mod max7219 {
 
             self.display_test_mode(false);
             self.scan_limit(7);
-            self.intensity(0x0);
+            self.intensity(0xF);
             self.decode_mode(false);
             self.shutdown_mode(false);
         }
@@ -546,7 +546,6 @@ mod tetris {
             self.shadow_shape = None;
         }
 
-        // TODO: get bounding box
         fn can_move_down(&self, shape: &Shape) -> bool {
             for (x, y) in shape.absolute_points() {
                 if y >= 31 || self.board.bit_at(x, y + 1) {
