@@ -1,0 +1,12 @@
+ - initial learnings from writing nostd rust
+   - no heap?
+   - no print
+   - no random
+   - no timer
+   - custom led driver
+ - good ux from scratch
+   - text
+ - testing
+
+ - picking hardware 
+ - design process
