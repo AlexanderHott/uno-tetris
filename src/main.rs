@@ -161,7 +161,7 @@ mod max7219 {
     use arduino_hal::port::{mode::Output, Pin};
 
     // pub const NUM_DEVICES: usize = 4;
-    // const MATRIX_SIZE: usize = 8;
+    const MATRIX_SIZE: usize = 8;
     //
     #[derive(Copy, Clone)]
     enum Config {
@@ -177,7 +177,7 @@ mod max7219 {
         DisplayTest(bool),
     }
 
-    pub struct Max7219<const MATRIX_SIZE: usize, const DEVICE_COUNT: usize> {
+    pub struct Max7219<const DEVICE_COUNT: usize> {
         /// Data in pin
         din: Pin<Output>,
         /// Chip select pin
@@ -188,7 +188,7 @@ mod max7219 {
         spi_data: [u16; DEVICE_COUNT],
     }
 
-    impl<const MATRIX_SIZE: usize, const DEVICE_COUNT: usize> Max7219<MATRIX_SIZE, DEVICE_COUNT> {
+    impl<const DEVICE_COUNT: usize> Max7219<DEVICE_COUNT> {
         pub fn new(din: Pin<Output>, cs: Pin<Output>, clk: Pin<Output>) -> Self {
             Max7219 {
                 din,
@@ -681,6 +681,36 @@ mod tetris {
 }
 
 #[arduino_hal::entry]
+fn main2() -> ! {
+    let dp = arduino_hal::Peripherals::take().unwrap();
+
+    let pins = arduino_hal::pins!(dp);
+    let ser = arduino_hal::default_serial!(dp, pins, 57600);
+
+    serial::init(ser);
+
+    let din = pins.d10.into_output().downgrade();
+    let cs = pins.d11.into_output().downgrade();
+    let clk = pins.d12.into_output().downgrade();
+
+    let mut matrix: max7219::Max7219<4> = max7219::Max7219::new(din, cs, clk);
+    matrix.init();
+    matrix.intensity(0x1);
+
+    println!("test");
+
+    matrix.set_board(&[
+        0b11111111, 0b00000000, 0b00000000, 0b00000000, 0b00000000, 0b00000000, 0b00000000,
+        0b00000000, 0b00000000, 0b00000000, 0b00000000, 0b00000000, 0b00000000, 0b00000000,
+        0b00000000, 0b00000000, 0b00000000, 0b00000000, 0b00000000, 0b00000000, 0b00000000,
+        0b00000000, 0b00000000, 0b00000000, 0b00000000, 0b00000000, 0b00000000, 0b00000000,
+        0b00000000, 0b00000000, 0b00000000, 0b00000000,
+    ]);
+    println!("test2");
+    loop {}
+}
+
+// #[arduino_hal::entry]
 fn main() -> ! {
     let dp = arduino_hal::Peripherals::take().unwrap();
 
@@ -694,9 +724,9 @@ fn main() -> ! {
 
     serial::init(ser);
 
-    let din = pins.d13.into_output().downgrade();
-    let cs = pins.d12.into_output().downgrade();
-    let clk = pins.d11.into_output().downgrade();
+    let din = pins.d10.into_output().downgrade();
+    let cs = pins.d11.into_output().downgrade();
+    let clk = pins.d12.into_output().downgrade();
 
     let right_btn = pins.d2.into_pull_up_input().downgrade();
     let up_btn = pins.d3.into_pull_up_input().downgrade();
@@ -708,9 +738,21 @@ fn main() -> ! {
     let mut left_btn_pressed = false;
 
     // TODO: hard code 8 as a constant. It isn't really generic
-    let mut matrix: max7219::Max7219<8, 4> = max7219::Max7219::new(din, cs, clk);
+    let mut matrix: max7219::Max7219<4> = max7219::Max7219::new(din, cs, clk);
     matrix.init();
-    // matrix.intensity(0xF);
+    matrix.intensity(0x0);
+
+    println!("test");
+
+    matrix.set_board(&[
+        0b10000000, 0b00000000, 0b00000000, 0b00000000, 0b00000000, 0b00000000, 0b00000000,
+        0b00000000, 0b00000000, 0b00000000, 0b00000000, 0b00000000, 0b00000000, 0b00000000,
+        0b00000000, 0b00000000, 0b00000000, 0b00000000, 0b00000000, 0b00000000, 0b00000000,
+        0b00000000, 0b00000000, 0b00000000, 0b00000000, 0b00000000, 0b00000000, 0b00000000,
+        0b00000000, 0b00000000, 0b00000000, 0b00000000,
+    ]);
+    println!("test2");
+    loop {}
 
     // get random seed from 10 analog samples
     // a0 should be disconnected
